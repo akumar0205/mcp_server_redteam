@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-redteam-poc"
+version = "0.1.0"
+description = "MCP Red Team PoC scanner (authorized testing only)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "MCP Red Team" }]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mcp_redteam*"]
