@@ -16,6 +16,11 @@ source .venv/bin/activate
 uv pip install -e .
 ```
 
+## Run the CLI
+
+Use the `mcp-redteam` command after installation. You can also invoke it via
+`python -m mcp_redteam` if you prefer module execution.
+
 ## Demo Mode (Built-in Agent + Tool Server)
 
 ```bash
