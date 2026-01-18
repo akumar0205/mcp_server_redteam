@@ -1,4 +1,3 @@
-from .cli import main
+from mcp_redteam.cli import app
 
-if __name__ == "__main__":
-    main()
+app()

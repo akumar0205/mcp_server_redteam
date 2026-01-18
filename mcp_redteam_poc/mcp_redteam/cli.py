@@ -1,61 +1,110 @@
-import argparse
-import datetime as dt
-import pathlib
-import sys
-from typing import Sequence
+from __future__ import annotations
 
-from .core.runner import run_scan
-from .lab.vuln_server import run_http_server
-from .lab.fake_metadata import run_fake_metadata
+import asyncio
+import multiprocessing
+import socket
+import time
+from pathlib import Path
+from typing import Optional
 
+import typer
 
-def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="MCP Red Team PoC scanner (authorized testing only)")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+from mcp_redteam.config import EndpointsFile, TargetConfig, load_json_config
+from mcp_redteam.report.html import render_report
+from mcp_redteam.report.junit import write_junit
+from mcp_redteam.runner.harness import build_scan_report, run_demo, run_suite, scan_endpoints
+from mcp_redteam.storage import write_report_json
+from mcp_redteam.suite.loader import load_suite
 
-    lab_parser = subparsers.add_parser("lab", help="Start local vulnerable MCP lab servers")
-    lab_parser.add_argument("--mcp-host", default="127.0.0.1", help="MCP server host")
-    lab_parser.add_argument("--mcp-port", type=int, default=9000, help="MCP server port")
-    lab_parser.add_argument("--metadata-host", default="127.0.0.1", help="Fake metadata host")
-    lab_parser.add_argument("--metadata-port", type=int, default=9100, help="Fake metadata port")
-
-    scan_parser = subparsers.add_parser("scan", help="Run MCP Red Team scan")
-    scan_parser.add_argument("--transport", choices=["stdio", "http"], required=True)
-    scan_parser.add_argument("--cmd", help="Command to spawn for stdio transport")
-    scan_parser.add_argument("--url", help="HTTP endpoint for MCP JSON-RPC")
-    scan_parser.add_argument("--out", help="Output directory (default runs/<timestamp>)")
-    scan_parser.add_argument("--budget", type=int, default=50, help="Max tool calls")
-    scan_parser.add_argument("--timeout", type=float, default=10.0, help="Timeout seconds")
-    scan_parser.add_argument("--include-llm", action="store_true", help="Include LLM-based probes (stub)")
-
-    return parser.parse_args(argv)
+app = typer.Typer(add_completion=False)
 
 
-def _default_out_dir() -> pathlib.Path:
-    timestamp = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    return pathlib.Path("runs") / timestamp
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    args = _parse_args(argv or sys.argv[1:])
+def _run_uvicorn(app_path: str, port: int) -> None:
+    import uvicorn
 
-    if args.command == "lab":
-        run_fake_metadata(args.metadata_host, args.metadata_port)
-        run_http_server(args.mcp_host, args.mcp_port, args.metadata_host, args.metadata_port)
-        return
+    uvicorn.run(app_path, host="127.0.0.1", port=port, log_level="error")
 
-    if args.command == "scan":
-        out_dir = pathlib.Path(args.out) if args.out else _default_out_dir()
-        out_dir.mkdir(parents=True, exist_ok=True)
-        run_scan(
-            transport=args.transport,
-            cmd=args.cmd,
-            url=args.url,
-            out_dir=out_dir,
-            budget=args.budget,
-            timeout=args.timeout,
-            include_llm=args.include_llm,
-        )
-        return
 
-    raise SystemExit("Unknown command")
+def _start_server(app_path: str) -> tuple[str, multiprocessing.Process]:
+    port = _find_free_port()
+    process = multiprocessing.Process(target=_run_uvicorn, args=(app_path, port), daemon=True)
+    process.start()
+    time.sleep(0.5)
+    return f"http://127.0.0.1:{port}", process
+
+
+def _write_outputs(report, out_dir: Path) -> None:
+    write_report_json(report, out_dir)
+    render_report(report, out_dir)
+    write_junit(report, out_dir)
+
+
+@app.command()
+def run(
+    suite: Path = typer.Option(..., "--suite", exists=True, help="Path to suite.yaml or suite dir"),
+    target: Optional[Path] = typer.Option(None, "--target", help="Path to target JSON"),
+    mcp_endpoints: Path = typer.Option(..., "--mcp-endpoints", help="Path to MCP endpoints JSON"),
+    out: Path = typer.Option(..., "--out", help="Output directory"),
+    llm_judge: bool = typer.Option(False, "--llm-judge", help="Enable LLM judge"),
+) -> None:
+    suite_data = load_suite(suite)
+    endpoints = load_json_config(mcp_endpoints, EndpointsFile)
+    target_config = load_json_config(target, TargetConfig) if target else None
+    report = asyncio.run(run_suite(suite_data, endpoints, target_config))
+    _write_outputs(report, out)
+
+
+@app.command("scan-mcp")
+def scan_mcp(
+    mcp_endpoints: Path = typer.Option(..., "--mcp-endpoints", help="Path to MCP endpoints JSON"),
+    out: Path = typer.Option(..., "--out", help="Output directory"),
+) -> None:
+    endpoints = load_json_config(mcp_endpoints, EndpointsFile)
+    endpoint_results = asyncio.run(scan_endpoints(endpoints))
+    report = build_scan_report(endpoints, endpoint_results)
+    _write_outputs(report, out)
+
+
+@app.command()
+def demo(
+    suite: Path = typer.Option(..., "--suite", exists=True, help="Path to suite.yaml or suite dir"),
+    out: Path = typer.Option(..., "--out", help="Output directory"),
+    tool_server: list[str] = typer.Option(
+        ["benign"],
+        "--tool-server",
+        help="Tool server type (benign|poisoned-tools|injection-output)",
+    ),
+) -> None:
+    suite_data = load_suite(suite)
+    tool_map = {
+        "benign": "mcp_redteam.mcp.servers.benign:app",
+        "poisoned-tools": "mcp_redteam.mcp.servers.poisoned_tools:app",
+        "injection-output": "mcp_redteam.mcp.servers.injection_output:app",
+    }
+    tool_urls: list[str] = []
+    processes: list[multiprocessing.Process] = []
+    agent_url, agent_proc = _start_server("mcp_redteam.mcp.servers.demo_agent_server:app")
+    processes.append(agent_proc)
+    try:
+        for server in tool_server:
+            if server not in tool_map:
+                raise typer.BadParameter(f"Unknown tool server: {server}")
+            url, proc = _start_server(tool_map[server])
+            tool_urls.append(url)
+            processes.append(proc)
+        report = asyncio.run(run_demo(suite_data, agent_url, tool_urls))
+        _write_outputs(report, out)
+    finally:
+        for proc in processes:
+            proc.terminate()
+            proc.join(timeout=2)
+
+
+if __name__ == "__main__":
+    app()
