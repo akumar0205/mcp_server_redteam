@@ -1,0 +1,14 @@
+{
+  "endpoints": [
+    {
+      "name": "prod_search_tools",
+      "base_url": "https://example.com/mcp",
+      "auth": { "type": "none" }
+    },
+    {
+      "name": "internal_tools",
+      "base_url": "http://10.0.0.12:8080",
+      "auth": { "type": "bearer", "token_env": "MCP_INTERNAL_TOKEN" }
+    }
+  ]
+}
