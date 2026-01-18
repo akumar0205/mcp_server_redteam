@@ -1,5 +1,2 @@
-"""MCP Red Team proof-of-concept scanner."""
-
-from .cli import main
-
-__all__ = ["main"]
+__all__ = ["__version__"]
+__version__ = "0.2.0"

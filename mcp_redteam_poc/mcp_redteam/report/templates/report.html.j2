@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>MCP Red Team Report</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; color: #1f2933; }
+    h1, h2, h3 { color: #102a43; }
+    .meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    .card { border: 1px solid #d9e2ec; border-radius: 8px; padding: 12px; background: #f8fafc; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #d9e2ec; padding: 8px; text-align: left; }
+    th { cursor: pointer; background: #f1f5f9; }
+    .severity-critical { color: #b91c1c; font-weight: bold; }
+    .severity-high { color: #c2410c; font-weight: bold; }
+    .severity-medium { color: #b45309; }
+    .severity-low { color: #3f6212; }
+    .section { margin-top: 24px; }
+    details { background: #f8fafc; padding: 8px; border-radius: 8px; margin-bottom: 12px; }
+    pre { white-space: pre-wrap; background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 8px; }
+  </style>
+  <script>
+    function sortTable(n) {
+      const table = document.getElementById("findings-table");
+      const rows = Array.from(table.rows).slice(1);
+      const asc = table.getAttribute("data-sort") !== "asc";
+      rows.sort((a, b) => {
+        const x = a.cells[n].innerText.toLowerCase();
+        const y = b.cells[n].innerText.toLowerCase();
+        return asc ? x.localeCompare(y) : y.localeCompare(x);
+      });
+      rows.forEach(row => table.tBodies[0].appendChild(row));
+      table.setAttribute("data-sort", asc ? "asc" : "desc");
+    }
+  </script>
+</head>
+<body>
+  <h1>MCP Red Team Report</h1>
+
+  <section class="section">
+    <h2>Run Metadata</h2>
+    <div class="meta">
+      <div class="card"><strong>Run ID</strong><div>{{ report.run_id }}</div></div>
+      <div class="card"><strong>Timestamp</strong><div>{{ report.timestamp }}</div></div>
+      <div class="card"><strong>Mode</strong><div>{{ report.mode }}</div></div>
+      <div class="card"><strong>Suite</strong><div>{{ report.suite_name or "N/A" }}</div></div>
+      <div class="card"><strong>Targets</strong><div>{{ report.targets | join(", ") }}</div></div>
+      <div class="card"><strong>Endpoints</strong><div>{{ report.endpoints | join(", ") }}</div></div>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>Summary</h2>
+    <div class="meta">
+      <div class="card"><strong>Total Tests</strong><div>{{ report.test_results | length }}</div></div>
+      <div class="card"><strong>Total Findings</strong><div>{{ report.findings | length }}</div></div>
+      <div class="card"><strong>Critical</strong><div>{{ report.severity_counts.get("critical", 0) }}</div></div>
+      <div class="card"><strong>High</strong><div>{{ report.severity_counts.get("high", 0) }}</div></div>
+      <div class="card"><strong>Medium</strong><div>{{ report.severity_counts.get("medium", 0) }}</div></div>
+      <div class="card"><strong>Low</strong><div>{{ report.severity_counts.get("low", 0) }}</div></div>
+      <div class="card"><strong>Score</strong><div>{{ report.score }}</div></div>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>Findings</h2>
+    <table id="findings-table" data-sort="asc">
+      <thead>
+        <tr>
+          <th onclick="sortTable(0)">ID</th>
+          <th onclick="sortTable(1)">Severity</th>
+          <th onclick="sortTable(2)">Category</th>
+          <th onclick="sortTable(3)">Title</th>
+          <th onclick="sortTable(4)">Source</th>
+          <th>Evidence</th>
+          <th>Recommendation</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for finding in report.findings %}
+        <tr>
+          <td>{{ finding.id }}</td>
+          <td class="severity-{{ finding.severity }}">{{ finding.severity }}</td>
+          <td>{{ finding.category }}</td>
+          <td>{{ finding.title }}</td>
+          <td>{{ finding.source }}</td>
+          <td>{{ finding.evidence }}</td>
+          <td>{{ finding.recommendation }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="section">
+    <h2>Per-Testcase Details</h2>
+    {% for test in report.test_results %}
+      <details>
+        <summary><strong>{{ test.test_id }}</strong> - {{ test.name }}</summary>
+        <p><strong>Policy:</strong> {{ test.policy }}</p>
+        <p><strong>Prompt:</strong> {{ test.prompt }}</p>
+        <p><strong>Tool Servers:</strong> {{ test.tool_servers | join(", ") }}</p>
+        <p><strong>Judges:</strong> {{ test.judges | join(", ") }}</p>
+        {% if test.assistant_response %}
+          <h4>Assistant Response</h4>
+          <pre>{{ test.assistant_response }}</pre>
+        {% endif %}
+        {% if test.tool_calls %}
+          <h4>Tool Calls</h4>
+          <ul>
+            {% for call in test.tool_calls %}
+              <li><strong>{{ call.tool }}</strong> - {{ call.output }}</li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+        {% if test.findings %}
+          <h4>Findings</h4>
+          <ul>
+            {% for finding in test.findings %}
+              <li>[{{ finding.severity }}] {{ finding.title }} - {{ finding.evidence }}</li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      </details>
+    {% endfor %}
+  </section>
+
+  <section class="section">
+    <h2>Per-Endpoint Details</h2>
+    {% for endpoint in report.endpoint_results %}
+      <details>
+        <summary><strong>{{ endpoint.name }}</strong> - {{ endpoint.base_url }}</summary>
+        <p><strong>Auth:</strong> {{ endpoint.auth_type }}</p>
+        <p><strong>Tools:</strong> {{ endpoint.tools | join(", ") }}</p>
+        {% if endpoint.findings %}
+          <h4>Findings</h4>
+          <ul>
+            {% for finding in endpoint.findings %}
+              <li>[{{ finding.severity }}] {{ finding.title }} - {{ finding.evidence }}</li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p>No endpoint findings detected.</p>
+        {% endif %}
+      </details>
+    {% endfor %}
+  </section>
+</body>
+</html>
